@@ -1,0 +1,13 @@
+{
+  "comment": "The aicad constraints that the benchmarks can build. A shape of the catalogue is benchmarked only if its kind is listed here; the others stay in the catalogue as a record of what the wild needs. Add a kind here when aicad gets the constraint (and teach src/instance.rs to build it).",
+  "supported": [
+    "all_different",
+    "not_equal",
+    "sum",
+    "among",
+    "at_least",
+    "gcc",
+    "regular",
+    "table"
+  ]
+}

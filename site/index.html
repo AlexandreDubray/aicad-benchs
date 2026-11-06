@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aicad benchmarks</title>
+<style>/*__STYLE__*/</style>
+</head>
+<body>
+<header>
+  <h1>aicad benchmarks</h1>
+  <p id="summary"></p>
+</header>
+<main>
+  <section id="movers-section">
+    <h2>Biggest steps</h2>
+    <p class="hint">Where a metric changed most between two consecutive commits. Click a row to see its timeline.</p>
+    <div class="controls" id="mover-controls"></div>
+    <div id="movers"></div>
+  </section>
+  <section>
+    <h2>Timeline</h2>
+    <div class="controls" id="controls"></div>
+    <div id="legend" class="legend"></div>
+    <div id="chart-wrap"><svg id="chart" role="img" aria-label="timeline of the selected metric"></svg><div id="tooltip" hidden></div></div>
+    <div id="detail"></div>
+  </section>
+  <section>
+    <details><summary>Commits</summary><div id="commits"></div></details>
+  </section>
+</main>
+<script id="data" type="application/json">__DATA__</script>
+<script>/*__SCRIPT__*/</script>
+</body>
+</html>
