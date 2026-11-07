@@ -103,7 +103,7 @@ The disjunctive shapes do not come from XCSP3 (its `noOverlap` is a model over s
 
 ```
 python tools/psplib_extract.py --psplib <dir with j30, j60, j90, j120>   # 2040 shapes, a few seconds
-python tools/select_psplib.py                                            # 5 instances x 3 horizons -> ci_shapes.json
+python tools/select_psplib.py                                            # 5 instances x 3 horizons x 2 variants -> ci_shapes.json
 ```
 
 `psplib_extract.py` takes, in each project, the largest set of jobs that pairwise cannot overlap (a
@@ -112,9 +112,11 @@ resource, or if one precedes the other), and gives each job the release date of 
 the start of the project and a deadline of `horizon - (longest path to the end)`. The horizon is the
 makespan of a serial schedule, so that the order of that schedule is a feasible permutation, scaled
 by `1 + slack`: `tight` (0), `medium` (0.5, some permutations are feasible) and `loose` (2, all are).
-The precedences that the project imposes between the jobs are kept in the catalogue
-(`induced_precedences`) for a `Disjunctive` that has them; `select_psplib.py --with-precedences`
-puts them in the shapes, which then have other keys than the plain ones.
+Each instance and horizon gives two shapes, with different keys and so two series: `plain`, a
+disjunctive without precedences, and `precedences`, the same jobs and windows with the precedences
+that the project imposes between them (the transitive reduction of the induced relation,
+`induced_precedences` in the catalogue). The plain ones show what the support of precedences costs
+a constraint that has none; the others, what the precedences themselves cost.
 
 ## How the inputs are made
 
@@ -142,8 +144,10 @@ state's size follows the shape. Caveats:
   would end the path at once): a third follow a feasible order up to a random layer, a third end like
   one, and the rest are random; half of the assignments of `is_satisfied` are feasible orders. The
   feasible orders are the reference order of the catalogue and neighbours of it that still meet the
-  deadlines (none on a tight shape). Under 65 jobs a call costs the same on every shape (the state is a
-  fixed-size record and the rules are evaluated without branching), except `is_satisfied`.
+  deadlines (none on a tight shape). Under 65 jobs the state is a fixed-size record and its functions
+  (`update`, `merge`, `hash`, ...) cost the same on every shape; `is_assignment_invalid` depends on the
+  precedences and `is_satisfied` on the number of jobs. With precedences, random permutations almost
+  never respect them, so the guided paths carry the workload.
 - Domains are rebuilt as `lo..lo+u` (holes in the original domain are lost); `regular` uses the
   alphabet of its automaton.
 

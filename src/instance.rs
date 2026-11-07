@@ -82,6 +82,25 @@ fn table_tuples(shape: &Shape, domain: &[isize]) -> Result<Vec<Vec<isize>>, Stri
     Ok(rows)
 }
 
+/// The precedences of a disjunctive shape: a list of `[before, after]` pairs of job numbers, absent
+/// for a shape without precedences.
+fn precedence_pairs(v: &Value, jobs: usize) -> Result<Vec<(usize, usize)>, String> {
+    if v.is_null() {
+        return Ok(Vec::new());
+    }
+    let list = v.as_array().ok_or("`precedences` is not a list")?;
+    list.iter()
+        .map(|pair| {
+            let pair = pair.as_array().filter(|p| p.len() == 2).ok_or("a precedence is not a pair")?;
+            let (before, after) = (uint(&pair[0], "precedence")?, uint(&pair[1], "precedence")?);
+            if before >= jobs || after >= jobs || before == after {
+                return Err(format!("the precedence ({before}, {after}) is not between two jobs of 0..{jobs}"));
+            }
+            Ok((before, after))
+        })
+        .collect()
+}
+
 /// True if processing `order` (job numbers, each once), every job as early as possible after its
 /// release date, ends every job by its deadline.
 fn meets_deadlines(order: &[isize], release: &[isize], deadline: &[isize], duration: &[isize]) -> bool {
@@ -96,14 +115,30 @@ fn meets_deadlines(order: &[isize], release: &[isize], deadline: &[isize], durat
     true
 }
 
+/// True if every `(i, j)` of `precedences` has `i` before `j` in `order`.
+fn respects(order: &[isize], precedences: &[(usize, usize)]) -> bool {
+    let mut position = vec![0usize; order.len()];
+    for (k, &job) in order.iter().enumerate() {
+        position[job as usize] = k;
+    }
+    precedences.iter().all(|&(before, after)| position[before] < position[after])
+}
+
 /// How many neighbours of the reference order a disjunctive shape adds to its guides.
 const DISJUNCTIVE_GUIDES: usize = 8;
 
 /// The guides of a `disjunctive` shape: the reference order of the catalogue, which meets every
 /// deadline, and a few orders reached from it by swapping neighbours while the deadlines are still
 /// met (seeded by the shape's key, so always the same). On a tight shape no swap is feasible and
-/// they are all the reference order.
-fn disjunctive_guides(shape: &Shape, release: &[isize], deadline: &[isize], duration: &[isize]) -> Result<Vec<Vec<isize>>, String> {
+/// they are all the reference order. With precedences, a swap must also keep them.
+fn disjunctive_guides(
+    shape: &Shape,
+    release: &[isize],
+    deadline: &[isize],
+    duration: &[isize],
+    precedences: &[(usize, usize)],
+) -> Result<Vec<Vec<isize>>, String> {
+    let feasible = |order: &[isize]| meets_deadlines(order, release, deadline, duration) && respects(order, precedences);
     let n = shape.arity;
     let mut order = ints(&shape.params["order"], "order")?;
     let mut sorted = order.clone();
@@ -114,13 +149,16 @@ fn disjunctive_guides(shape: &Shape, release: &[isize], deadline: &[isize], dura
     if !meets_deadlines(&order, release, deadline, duration) {
         return Err("disjunctive: the reference `order` misses a deadline".into());
     }
+    if !respects(&order, precedences) {
+        return Err("disjunctive: the reference `order` breaks a precedence".into());
+    }
     let seed = shape.key.get(..15.min(shape.key.len())).and_then(|k| u64::from_str_radix(k, 16).ok()).unwrap_or(1);
     let mut rng = Rng::new(seed);
     let mut guides = vec![order.clone()];
     for step in 0..DISJUNCTIVE_GUIDES * 50 {
         let i = rng.below(n - 1);
         order.swap(i, i + 1);
-        if !meets_deadlines(&order, release, deadline, duration) {
+        if !feasible(&order) {
             order.swap(i, i + 1);
         }
         if step % 50 == 49 {
@@ -208,9 +246,6 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
                 if shape.u != shape.arity || shape.lo != 0 {
                     return Err("disjunctive: the domain must be the job numbers 0..arity".into());
                 }
-                if p["precedences"].as_array().is_some_and(|l| !l.is_empty()) {
-                    return Err("disjunctive: precedences are not supported by this benchmark yet".into());
-                }
                 let (release, deadline, duration) =
                     (ints(&p["release"], "release")?, ints(&p["deadline"], "deadline")?, ints(&p["duration"], "duration")?);
                 if [release.len(), deadline.len(), duration.len()].iter().any(|&l| l != shape.arity) {
@@ -219,9 +254,13 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
                 if duration.iter().any(|&d| d < 0) {
                     return Err("disjunctive: negative duration".into());
                 }
-                guides = disjunctive_guides(shape, &release, &deadline, &duration)?;
+                let precedences = precedence_pairs(&p["precedences"], shape.arity)?;
+                guides = disjunctive_guides(shape, &release, &deadline, &duration, &precedences)?;
                 permutation = true;
-                builders::disjunctive(&mut problem, vars, release, deadline, duration)
+                // No list, or an empty one, is the plain constraint: `None`, as a model without
+                // precedences would pass it.
+                let precedences = (!precedences.is_empty()).then_some(precedences);
+                builders::disjunctive(&mut problem, vars, release, deadline, duration, precedences)
             }
             "regular" => {
                 let a = &p["automaton"];
@@ -298,10 +337,48 @@ mod tests {
         assert!(build(&shape).is_err());
     }
 
+    fn with_precedences(mut shape: Shape, precedences: serde_json::Value) -> Shape {
+        shape.params["precedences"] = precedences;
+        shape
+    }
+
     #[test]
-    fn a_disjunctive_with_precedences_is_rejected_until_aicad_supports_them() {
-        let mut shape = disjunctive(&[0, 0], &[9, 9], &[2, 2], &[0, 1]);
-        shape.params["precedences"] = json!([[0, 1]]);
-        assert!(build(&shape).is_err());
+    fn the_guides_of_a_disjunctive_with_precedences_respect_them() {
+        // Wide windows, and job 2 must come before job 1 and job 0 before job 3.
+        let plain = disjunctive(&[0; 4], &[40; 4], &[3, 2, 4, 2], &[0, 2, 1, 3]);
+        let shape = with_precedences(plain, json!([[2, 1], [0, 3]]));
+        let instance = build(&shape).expect("the shape builds");
+        assert_eq!(instance.guides.len(), DISJUNCTIVE_GUIDES + 1);
+        for guide in &instance.guides {
+            assert!(instance.constraint.is_satisfied(guide), "{guide:?} should satisfy the constraint");
+            assert!(respects(guide, &[(2, 1), (0, 3)]), "{guide:?} breaks a precedence");
+        }
+        // Orders that break a precedence are not satisfying.
+        assert!(!instance.constraint.is_satisfied(&[1, 2, 0, 3]));
+    }
+
+    #[test]
+    fn an_empty_or_absent_list_of_precedences_is_the_plain_disjunctive() {
+        let plain = disjunctive(&[0; 4], &[40; 4], &[3, 2, 4, 2], &[0, 1, 2, 3]);
+        let empty = with_precedences(plain.clone(), json!([]));
+        let (a, b) = (build(&plain).unwrap(), build(&empty).unwrap());
+        assert_eq!(a.guides, b.guides);
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0], [1, 0, 3, 2]] {
+            assert_eq!(a.constraint.is_satisfied(&order), b.constraint.is_satisfied(&order));
+        }
+    }
+
+    #[test]
+    fn a_reference_order_that_breaks_a_precedence_is_rejected() {
+        let plain = disjunctive(&[0; 3], &[40; 3], &[1, 1, 1], &[0, 1, 2]);
+        assert!(build(&with_precedences(plain, json!([[2, 0]]))).is_err());
+    }
+
+    #[test]
+    fn invalid_precedences_are_rejected() {
+        let plain = disjunctive(&[0; 3], &[40; 3], &[1, 1, 1], &[0, 1, 2]);
+        for bad in [json!([[0, 0]]), json!([[0, 7]]), json!([[0, 1], [1, 0]]), json!([[0]]), json!("x")] {
+            assert!(build(&with_precedences(plain.clone(), bad.clone())).is_err(), "{bad} should be rejected");
+        }
     }
 }

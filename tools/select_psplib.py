@@ -24,9 +24,12 @@ The shapes replace the disjunctive ones of ``ci_shapes.json``; the others are le
 shape's ``key`` is a hash of its content (release, deadline, duration, precedences), so a metric
 keeps its name for as long as the shape does not change, whatever its position in the file.
 
-``--with-precedences`` adds the precedences of the project between the jobs (``induced_precedences``
-of the catalogue) to each shape. It is for an aicad whose ``Disjunctive`` knows precedences: the
-shapes get new keys, next to the ones without precedences.
+Every instance and level gives two variants (``--variants``, both by default): ``plain``, a
+disjunctive without precedences, and ``precedences``, the same jobs and windows with the precedences
+the project imposes between them (``induced_precedences`` of the catalogue). The variants have
+different keys, so each has its own series. The plain ones come first and keep their ids and keys when
+the other variant is added or removed: their series show what the code for precedences costs when
+there are none.
 """
 import argparse
 import hashlib
@@ -49,13 +52,16 @@ def key_of(shape):
 
 
 def feasible_fraction(p, samples=400):
-    """Share of random permutations whose as-early-as-possible schedule meets every deadline."""
+    """Share of random permutations that respect the precedences and whose as-early-as-possible schedule meets every deadline."""
     rng = random.Random(1)
     n = len(p["duration"])
     ok = 0
     for _ in range(samples):
         order = list(range(n))
         rng.shuffle(order)
+        position = {j: k for k, j in enumerate(order)}
+        if any(position[a] > position[b] for a, b in p.get("precedences", [])):
+            continue
         c = 0
         for j in order:
             c = max(c, p["release"][j]) + p["duration"][j]
@@ -76,47 +82,56 @@ def pick(pool, count, last_bin):
     return [pool[round((2 * i + 1) * len(pool) / (2 * count))] for i in range(count)]
 
 
+def make_shape(s, level, slack, variant):
+    """The shape of catalogue entry ``s`` at the horizon of ``level``, with or without precedences."""
+    q = s["params"]
+    horizon = math.ceil(q["sgs_makespan"] * (1 + slack) - 1e-9)
+    params = {
+        "release": q["release"],
+        "deadline": [horizon - t for t in q["tail"]],
+        "duration": q["duration"],
+        "order": q["order"],
+    }
+    if variant == "precedences":
+        params["precedences"] = q["induced_precedences"]
+    shape = {
+        "kind": "disjunctive", "supported": True, "arity": s["arity"], "domain": s["domain"],
+        "params": params,
+        "source": {**s["source"], "level": level, "horizon": horizon, "variant": variant},
+        "families": s["families"], "instances": 1, "weight": 1.0,
+    }
+    shape["key"] = key_of(shape)
+    return shape
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--catalogue", default=os.path.join(ROOT, "catalogue", "psplib_shapes.json"))
     p.add_argument("--ci", default=os.path.join(ROOT, "catalogue", "ci_shapes.json"))
     p.add_argument("--per-bin", type=int, default=1)
-    p.add_argument("--with-precedences", action="store_true")
+    p.add_argument("--variants", default="plain,precedences", help="comma-separated: plain, precedences")
     opts = p.parse_args()
     pool = json.load(open(opts.catalogue))["shapes"]
     ci = json.load(open(opts.ci))
     chosen = []
     for k, (lo, hi) in enumerate(BINS):
         chosen += pick([s for s in pool if lo <= s["arity"] <= hi], opts.per_bin, k == len(BINS) - 1)
+    variants = [v.strip() for v in opts.variants.split(",") if v.strip()]
+    if not variants or any(v not in ("plain", "precedences") for v in variants):
+        raise SystemExit("--variants takes `plain` and/or `precedences`")
     out = []
-    for s in chosen:
-        for level, slack in LEVELS.items():
-            horizon = math.ceil(s["params"]["sgs_makespan"] * (1 + slack) - 1e-9)
-            q = s["params"]
-            params = {
-                "release": q["release"],
-                "deadline": [horizon - t for t in q["tail"]],
-                "duration": q["duration"],
-                "order": q["order"],
-            }
-            if opts.with_precedences:
-                params["precedences"] = q["induced_precedences"]
-            shape = {
-                "kind": "disjunctive", "supported": True, "arity": s["arity"], "domain": s["domain"],
-                "params": params,
-                "source": {**s["source"], "level": level, "horizon": horizon},
-                "families": s["families"], "instances": 1, "weight": 1.0,
-            }
-            shape["key"] = key_of(shape)
-            out.append(shape)
+    for variant in variants:
+        for s in chosen:
+            for level, slack in LEVELS.items():
+                out.append(make_shape(s, level, slack, variant))
     for i, s in enumerate(out):
         s["id"] = ID_BASE + i
     kept = [s for s in ci["shapes"] if s["kind"] != "disjunctive"]
     json.dump({"source": ci["source"], "shapes": kept + out}, open(opts.ci, "w"), indent=1)
-    print(f"{len(out)} disjunctive shapes ({len(out) // len(LEVELS)} instances x {len(LEVELS)} horizons) -> {opts.ci}")
+    print(f"{len(out)} disjunctive shapes ({len(chosen)} instances x {len(LEVELS)} horizons x {len(variants)} variants) -> {opts.ci}")
     for s in out:
         src = s["source"]
-        print(f"  #{s['id']} {src['family']:5s} {src['instance']:10s} n={s['arity']:<3d} {src['level']:7s} horizon {src['horizon']:<4d}"
+        print(f"  #{s['id']} {src['family']:5s} {src['instance']:10s} n={s['arity']:<3d} {src['variant']:11s} {src['level']:7s} horizon {src['horizon']:<4d}"
               f" feasible permutations {feasible_fraction(s['params']):.1%}")
 
 
