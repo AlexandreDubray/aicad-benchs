@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 pub struct Shape {
     /// Position in the catalogue; stable for a given catalogue.
     pub id: usize,
-    /// `all_different`, `not_equal`, `sum`, `among`, `at_least`, `gcc`, `regular`, or a kind that
-    /// `aicad` does not have.
+    /// A hash of the shape's content, stable when the catalogue grows; empty if the catalogue
+    /// has none. It seeds what a shape draws at random (the guides of a disjunctive).
+    pub key: String,
+    /// `all_different`, `not_equal`, `sum`, `among`, `at_least`, `gcc`, `regular`, `table`,
+    /// `disjunctive`, or a kind that `aicad` does not have.
     pub kind: String,
     /// True if the kind is listed in `supported_constraints.json`.
     pub supported: bool,
@@ -52,6 +55,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Vec<Shape>, String> {
         }
         out.push(Shape {
             id: id as usize,
+            key: s["key"].as_str().unwrap_or("").to_string(),
             kind: kind.to_string(),
             supported: s["supported"].as_bool().unwrap_or(false),
             arity: arity as usize,

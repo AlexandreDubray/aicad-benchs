@@ -16,10 +16,14 @@ compare to big-domain variables).
 ```
 supported_constraints.json   kinds that aicad can build; the others are catalogued but not benchmarked
 catalogue/xcsp3_shapes.json  every distinct shape found (all kinds), with `supported`, families and weight
-catalogue/ci_shapes.json     ~27 shapes picked for CI (quantiles of size + both sides of the 64-value limit)
+catalogue/psplib_shapes.json one disjunctive shape per PSPLIB instance (j30, j60, j90, j120)
+catalogue/ci_shapes.json     the shapes picked for CI (quantiles of size + both sides of the 64-value limit,
+                             and the disjunctive shapes of select_psplib.py)
 tools/xcsp_extract.py        XCSP3 instances -> raw per-instance constraint records
 tools/build_catalogue.py     raw records + supported list -> xcsp3_shapes.json
 tools/select_ci.py           xcsp3_shapes.json -> ci_shapes.json
+tools/psplib_extract.py      PSPLIB .sm files -> psplib_shapes.json (disjunctive shapes)
+tools/select_psplib.py       psplib_shapes.json -> the disjunctive shapes of ci_shapes.json
 tools/report.py              cargo bench output -> table of ns per call (and ratio against a past run)
 tools/icount.py              instruction counts per call under valgrind
 tools/snapshot.py            measures one build of aicad -> data/<commit>.json (the CI step)
@@ -94,6 +98,24 @@ python tools/select_ci.py --raw <raw dir>    # also copies the tuples of the cho
 The committed catalogue comes from the sample: 833 instances, 7098 shapes. It is resumable per
 family (`--budget` bounds the seconds).
 
+The disjunctive shapes do not come from XCSP3 (its `noOverlap` is a model over start times, where
+`aicad`'s `Disjunctive` is the permutation model) but from the RCPSP instances of PSPLIB:
+
+```
+python tools/psplib_extract.py --psplib <dir with j30, j60, j90, j120>   # 2040 shapes, a few seconds
+python tools/select_psplib.py                                            # 5 instances x 3 horizons -> ci_shapes.json
+```
+
+`psplib_extract.py` takes, in each project, the largest set of jobs that pairwise cannot overlap (a
+maximum clique of the graph where two jobs are linked if their demands exceed the capacity of a
+resource, or if one precedes the other), and gives each job the release date of its longest path from
+the start of the project and a deadline of `horizon - (longest path to the end)`. The horizon is the
+makespan of a serial schedule, so that the order of that schedule is a feasible permutation, scaled
+by `1 + slack`: `tight` (0), `medium` (0.5, some permutations are feasible) and `loose` (2, all are).
+The precedences that the project imposes between the jobs are kept in the catalogue
+(`induced_precedences`) for a `Disjunctive` that has them; `select_psplib.py --with-precedences`
+puts them in the shapes, which then have other keys than the plain ones.
+
 ## How the inputs are made
 
 `workload.rs` draws seeded random paths (16 per shape, at 64 evenly spaced layers) and folds
@@ -115,6 +137,13 @@ state's size follows the shape. Caveats:
   random paths leave a table at the first layer, so for tables a third of the paths follow a
   tuple up to a random layer, a third follow one from a random layer, and half of the assignments
   of `is_satisfied` are tuples.
+- Disjunctive shapes have 6 to 37 jobs (the size of a clique of PSPLIB, so under the 64-value
+  limit). Their scope is a permutation of the jobs, so the paths are permutations (a repeated job
+  would end the path at once): a third follow a feasible order up to a random layer, a third end like
+  one, and the rest are random; half of the assignments of `is_satisfied` are feasible orders. The
+  feasible orders are the reference order of the catalogue and neighbours of it that still meet the
+  deadlines (none on a tight shape). Under 65 jobs a call costs the same on every shape (the state is a
+  fixed-size record and the rules are evaluated without branching), except `is_satisfied`.
 - Domains are rebuilt as `lo..lo+u` (holes in the original domain are lost); `regular` uses the
   alphabet of its automaton.
 

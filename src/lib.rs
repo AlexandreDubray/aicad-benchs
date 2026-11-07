@@ -1,4 +1,5 @@
-//! Micro-benchmarks of the `aicad` constraint functions, on shapes seen in the XCSP3 benchmarks.
+//! Micro-benchmarks of the `aicad` constraint functions, on shapes seen in the XCSP3 benchmarks
+//! (and, for the disjunctive constraint, in the RCPSP instances of PSPLIB).
 //!
 //! # What is measured
 //!
@@ -11,7 +12,8 @@
 //! # How it works
 //!
 //! 1. [`shape`] reads the catalogue of `catalogue/*.json` (see the README to rebuild it): the
-//!    kind, arity, domain and parameters of constraints extracted from the XCSP3 instances.
+//!    kind, arity, domain and parameters of constraints extracted from the XCSP3 instances, or the
+//!    jobs of a unary resource extracted from a PSPLIB project.
 //! 2. [`instance`] builds a real `aicad` constraint of that shape on a synthetic problem.
 //! 3. [`workload`] draws seeded random paths through the layers of the constraint and folds
 //!    `update` (top-down) and `update_backward` (bottom-up) along them, using only the public

@@ -3,3 +3,7 @@
 results/*
 !results/.gitkeep
 catalogue/raw/
+
+# Never commit a deploy key (the repository is public)
+bench_deploy_key*
+*.pem

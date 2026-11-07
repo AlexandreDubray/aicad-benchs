@@ -22,6 +22,10 @@ pub struct Instance {
     /// table), and an empty list otherwise. The workload walks along them so that the states it
     /// builds are not all the empty state that uniformly random values lead to.
     pub guides: Vec<Vec<isize>>,
+    /// True if the scope is a sequence of distinct values (the order of the jobs of a
+    /// disjunctive): the workload then draws permutations of the domain instead of independent
+    /// values, which would repeat a job within a few layers.
+    pub permutation: bool,
 }
 
 fn ints(v: &Value, what: &str) -> Result<Vec<isize>, String> {
@@ -78,6 +82,54 @@ fn table_tuples(shape: &Shape, domain: &[isize]) -> Result<Vec<Vec<isize>>, Stri
     Ok(rows)
 }
 
+/// True if processing `order` (job numbers, each once), every job as early as possible after its
+/// release date, ends every job by its deadline.
+fn meets_deadlines(order: &[isize], release: &[isize], deadline: &[isize], duration: &[isize]) -> bool {
+    let mut end = isize::MIN;
+    for &job in order {
+        let j = job as usize;
+        end = end.max(release[j]) + duration[j];
+        if end > deadline[j] {
+            return false;
+        }
+    }
+    true
+}
+
+/// How many neighbours of the reference order a disjunctive shape adds to its guides.
+const DISJUNCTIVE_GUIDES: usize = 8;
+
+/// The guides of a `disjunctive` shape: the reference order of the catalogue, which meets every
+/// deadline, and a few orders reached from it by swapping neighbours while the deadlines are still
+/// met (seeded by the shape's key, so always the same). On a tight shape no swap is feasible and
+/// they are all the reference order.
+fn disjunctive_guides(shape: &Shape, release: &[isize], deadline: &[isize], duration: &[isize]) -> Result<Vec<Vec<isize>>, String> {
+    let n = shape.arity;
+    let mut order = ints(&shape.params["order"], "order")?;
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    if sorted != (0..n as isize).collect::<Vec<_>>() {
+        return Err("disjunctive: `order` is not a permutation of the jobs".into());
+    }
+    if !meets_deadlines(&order, release, deadline, duration) {
+        return Err("disjunctive: the reference `order` misses a deadline".into());
+    }
+    let seed = shape.key.get(..15.min(shape.key.len())).and_then(|k| u64::from_str_radix(k, 16).ok()).unwrap_or(1);
+    let mut rng = Rng::new(seed);
+    let mut guides = vec![order.clone()];
+    for step in 0..DISJUNCTIVE_GUIDES * 50 {
+        let i = rng.below(n - 1);
+        order.swap(i, i + 1);
+        if !meets_deadlines(&order, release, deadline, duration) {
+            order.swap(i, i + 1);
+        }
+        if step % 50 == 49 {
+            guides.push(order.clone());
+        }
+    }
+    Ok(guides)
+}
+
 /// Builds the constraint of `shape`. Returns a message instead of panicking when the shape cannot
 /// be built (an unsupported kind, a malformed parameter, a constructor guard).
 pub fn build(shape: &Shape) -> Result<Instance, String> {
@@ -94,6 +146,7 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
         }
     }
     let mut guides: Vec<Vec<isize>> = Vec::new();
+    let mut permutation = false;
     let mut problem = Problem::default();
     let vars: Vec<VariableIndex> = problem.add_variables(shape.arity, domain.clone());
     let made = catch_unwind(AssertUnwindSafe(|| -> Result<ConstraintIndex, String> {
@@ -151,6 +204,25 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
                 guides = tuples.clone();
                 builders::table(&mut problem, vars, tuples)
             }
+            "disjunctive" => {
+                if shape.u != shape.arity || shape.lo != 0 {
+                    return Err("disjunctive: the domain must be the job numbers 0..arity".into());
+                }
+                if p["precedences"].as_array().is_some_and(|l| !l.is_empty()) {
+                    return Err("disjunctive: precedences are not supported by this benchmark yet".into());
+                }
+                let (release, deadline, duration) =
+                    (ints(&p["release"], "release")?, ints(&p["deadline"], "deadline")?, ints(&p["duration"], "duration")?);
+                if [release.len(), deadline.len(), duration.len()].iter().any(|&l| l != shape.arity) {
+                    return Err("disjunctive: release, deadline and duration need one entry per job".into());
+                }
+                if duration.iter().any(|&d| d < 0) {
+                    return Err("disjunctive: negative duration".into());
+                }
+                guides = disjunctive_guides(shape, &release, &deadline, &duration)?;
+                permutation = true;
+                builders::disjunctive(&mut problem, vars, release, deadline, duration)
+            }
             "regular" => {
                 let a = &p["automaton"];
                 if a["deterministic"].as_bool() != Some(true) {
@@ -174,5 +246,62 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
     };
     let mut constraint = problem[index].clone();
     constraint.update_variable_ordering(&(0..shape.arity).map(VariableIndex).collect::<Vec<_>>());
-    Ok(Instance { problem, constraint, arity: shape.arity, domain, guides })
+    Ok(Instance { problem, constraint, arity: shape.arity, domain, guides, permutation })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn disjunctive(release: &[i64], deadline: &[i64], duration: &[i64], order: &[i64]) -> Shape {
+        let n = release.len();
+        Shape {
+            id: 0,
+            key: "0123456789".into(),
+            kind: "disjunctive".into(),
+            supported: true,
+            arity: n,
+            u: n,
+            lo: 0,
+            params: json!({"release": release, "deadline": deadline, "duration": duration, "order": order}),
+            base_dir: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn the_guides_of_a_disjunctive_satisfy_it() {
+        // Four jobs with wide windows: several orders are feasible.
+        let shape = disjunctive(&[0, 0, 0, 0], &[40, 40, 40, 40], &[3, 2, 4, 2], &[0, 1, 2, 3]);
+        let instance = build(&shape).expect("the shape builds");
+        assert!(instance.permutation);
+        assert_eq!(instance.guides.len(), DISJUNCTIVE_GUIDES + 1);
+        for guide in &instance.guides {
+            assert!(instance.constraint.is_satisfied(guide), "{guide:?} should satisfy the constraint");
+        }
+        // Wide windows let the neighbour swaps move the order away from the reference.
+        assert!(instance.guides.iter().any(|g| g != &instance.guides[0]));
+    }
+
+    #[test]
+    fn a_tight_disjunctive_keeps_the_reference_order() {
+        // Each job fits only in its own slot, so no neighbour swap is feasible.
+        let shape = disjunctive(&[0, 2, 5], &[2, 5, 6], &[2, 3, 1], &[0, 1, 2]);
+        let instance = build(&shape).expect("the shape builds");
+        assert!(instance.guides.iter().all(|g| g == &vec![0, 1, 2]));
+    }
+
+    #[test]
+    fn a_reference_order_that_misses_a_deadline_is_rejected() {
+        let shape = disjunctive(&[0, 0], &[3, 3], &[2, 2], &[0, 1]);
+        assert!(build(&shape).is_err());
+    }
+
+    #[test]
+    fn a_disjunctive_with_precedences_is_rejected_until_aicad_supports_them() {
+        let mut shape = disjunctive(&[0, 0], &[9, 9], &[2, 2], &[0, 1]);
+        shape.params["precedences"] = json!([[0, 1]]);
+        assert!(build(&shape).is_err());
+    }
 }

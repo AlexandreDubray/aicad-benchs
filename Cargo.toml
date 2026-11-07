@@ -3,7 +3,7 @@ name = "aicad-benchs"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Micro-benchmarks of the aicad constraint functions on shapes seen in the XCSP3 benchmarks."
+description = "Micro-benchmarks of the aicad constraint functions on shapes seen in the XCSP3 benchmarks and PSPLIB."
 
 [dependencies]
 aicad = { path = "../aicad", default-features = false }

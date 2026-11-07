@@ -6,6 +6,10 @@
 //! knowledge of the constraint, except that a shape may list assignments that satisfy it
 //! ([`Instance::guides`], the tuples of a table) for the paths to follow.
 //!
+//! For a constraint whose scope is a sequence of distinct values (the order of the jobs of a
+//! disjunctive, [`Instance::permutation`]) the paths are permutations of the domain, with the same
+//! kinds of guided paths, so that a state does not turn invalid the moment a job is repeated.
+//!
 //! To bound memory, only [`Config::layers`] layers are kept (evenly spaced), with
 //! [`Config::paths`] paths each, however large the arity.
 
@@ -64,6 +68,43 @@ pub struct Workload {
     pub assignments: Vec<Vec<isize>>,
 }
 
+/// `jobs` in a uniformly random order (Fisher-Yates).
+fn shuffled(rng: &mut Rng, mut jobs: Vec<isize>) -> Vec<isize> {
+    for i in (1..jobs.len()).rev() {
+        jobs.swap(i, rng.below(i + 1));
+    }
+    jobs
+}
+
+/// `guide` without the values in `taken`, in the order of `guide`.
+fn without(guide: &[isize], taken: &[isize]) -> Vec<isize> {
+    guide.iter().copied().filter(|v| !taken.contains(v)).collect()
+}
+
+/// A permutation of the domain for the path `k`: a third follow a guide up to a random position and
+/// finish in random order, a third start in random order and finish as a guide does (what is left
+/// of it), and the rest are random.
+fn permutation_path(instance: &Instance, rng: &mut Rng, k: usize) -> Vec<isize> {
+    let n = instance.arity;
+    let random = shuffled(rng, instance.domain.clone());
+    if instance.guides.is_empty() || k % 3 == 2 {
+        return random;
+    }
+    let guide = &instance.guides[rng.below(instance.guides.len())];
+    let cut = rng.below(n + 1);
+    if k % 3 == 0 {
+        let mut path = guide[..cut].to_vec();
+        let rest = shuffled(rng, without(&random, &path));
+        path.extend(rest);
+        path
+    } else {
+        let mut path = random[..cut].to_vec();
+        let rest = without(guide, &path);
+        path.extend(rest);
+        path
+    }
+}
+
 /// The kept layers: all of them, or `count` evenly spaced from the first to the last.
 fn kept_layers(arity: usize, count: usize) -> Vec<usize> {
     if arity <= count {
@@ -88,9 +129,15 @@ impl Workload {
         let mut down: Vec<Vec<Prop>> = (0..kept.len()).map(|_| Vec::new()).collect();
         let mut up: Vec<Vec<Prop>> = (0..kept.len()).map(|_| Vec::new()).collect();
         let mut values = vec![vec![0isize; n]; config.paths];
-        for path in values.iter_mut() {
-            for v in path.iter_mut() {
-                *v = instance.domain[rng.below(instance.domain.len())];
+        if instance.permutation {
+            for (k, path) in values.iter_mut().enumerate() {
+                *path = permutation_path(instance, &mut rng, k);
+            }
+        } else {
+            for path in values.iter_mut() {
+                for v in path.iter_mut() {
+                    *v = instance.domain[rng.below(instance.domain.len())];
+                }
             }
         }
         // With guides (the tuples of a table), uniformly random values leave the table at the
@@ -98,7 +145,7 @@ impl Workload {
         // layer and continue at random (their top-down states are populated until they leave the
         // table), a third are random up to a layer and then follow a tuple (their bottom-up states
         // are), and the rest are random.
-        if !instance.guides.is_empty() {
+        if !instance.guides.is_empty() && !instance.permutation {
             for (k, path) in values.iter_mut().enumerate() {
                 let guide = &instance.guides[rng.below(instance.guides.len())];
                 let cut = rng.below(n + 1);
@@ -167,6 +214,9 @@ impl Workload {
             .map(|k| {
                 if !instance.guides.is_empty() && k % 2 == 0 {
                     return instance.guides[rng.below(instance.guides.len())].clone();
+                }
+                if instance.permutation {
+                    return shuffled(&mut rng, instance.domain.clone());
                 }
                 (0..n).map(|_| instance.domain[rng.below(instance.domain.len())]).collect()
             })
