@@ -19,3 +19,10 @@ harness = false
 
 [profile.bench]
 debug = 1
+
+# One code-generation unit: the compiler inlines only within a unit, so with the default 16 an edit
+# anywhere in aicad can move the instruction counts of an unrelated function by a few instructions.
+# With one, a count changes only when the code it measures does. This applies to the benchmark
+# build only (`bench` inherits from `release`), not to how aicad itself is built.
+[profile.release]
+codegen-units = 1

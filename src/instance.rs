@@ -258,9 +258,11 @@ pub fn build(shape: &Shape) -> Result<Instance, String> {
                 guides = disjunctive_guides(shape, &release, &deadline, &duration, &precedences)?;
                 permutation = true;
                 // No list, or an empty one, is the plain constraint: `None`, as a model without
-                // precedences would pass it.
+                // precedences would pass it. Neither setup times nor padding are benchmarked yet.
                 let precedences = (!precedences.is_empty()).then_some(precedences);
-                builders::disjunctive(&mut problem, vars, release, deadline, duration, precedences)
+                builders::disjunctive(
+                    &mut problem, vars, release, deadline, duration, precedences, None, false,
+                )
             }
             "regular" => {
                 let a = &p["automaton"];
